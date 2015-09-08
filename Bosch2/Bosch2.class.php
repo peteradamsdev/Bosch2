@@ -2,38 +2,30 @@
 
 class Bosch2
 {
-	public $fields;
+	public $fields = array();
+    public $has_errors;
 
 	function __construct($fields)
 	{
 		$this->fields = $fields;
-	}
 
-	public function loadField($name)
-	{
-		try
-		{
-			if ( !array_key_exists($name, $this->fields) ){
-                throw new Exception('Field name <code>'.$name.'</code> not found');
-			}
-
-			return new Bosch2_Field($name, $this->fields[$name]);
-		}
-		catch (Exception $e) 
-		{
-            Bosch2::exception($e);                   
+        foreach( $fields as $name => $properties )
+        {
+            $this->fields[$name] = new Bosch2_Field($name, $properties);
         }
+
+        $this->has_errors = false;
 	}
 
 	public function outputLabel($name)
 	{
-		$field = $this->loadField($name);
+		$field = $this->fields[$name];
 		echo '<label for="'.$field->name.'">'.$field->label.'</label>';
 	}
 
 	public function outputField($name)
 	{		
-		$field = $this->loadField($name);
+		$field = $this->fields[$name];
 		$outputFunc = 'output'.ucfirst($field->type);
 		echo $field->$outputFunc();	
 
@@ -57,8 +49,9 @@ class Bosch2
 
 		foreach( $data as $k => $v )
 		{
-			$this->fields[$k]['stored_value'] = $v;
-			$this->fields[$k] = Bosch2::runFilters($this->fields[$k]);
+			$this->fields[$k]->stored_value = $v;
+            $this->fields[$k] = $this->runFilters($this->fields[$k]);
+			$this->fields[$k] = $this->runValidators($this->fields[$k]);
 		}
 
 		return $data;
@@ -114,13 +107,13 @@ class Bosch2
         return $return;
     }
 
-    public static function runFilters($field)
+    public function runFilters($field)
     {
-    	$filters = explode('|', $field['filter']);
+        $filters = explode('|', $field->filter);
 
-    	foreach($filters as $filter)
-    	{
-    		$params = null;
+        foreach($filters as $filter)
+        {
+            $params = null;
 
             if (strstr($filter, ',') !== false)
             {
@@ -129,30 +122,67 @@ class Bosch2
                 $filter = $filter[0];
             }
 
-            if (is_callable(array('Bosch2', 'filter_'.$filter)))
+            if (is_callable(array('Bosch2_Filter', 'filter_'.$filter)))
             {
                 $method = 'filter_'.$filter;
-                $field['stored_value'] = Bosch2::$method($field['stored_value'], $params);
+                $field->stored_value = Bosch2_Filter::$method($field->stored_value, $params);
             } 
             elseif (function_exists($filter))
             {
-                $field['stored_value'] = $filter($field['stored_value']);
+                $field->stored_value = $filter($field->stored_value);
             }
             else
             {
-            	throw new Exception("Filter method '$filter' does not exist.");
+                throw new Exception("Filter method '$filter' does not exist.");
             }
-    	}
+        }
+
+        return $field;
+    }
+    
+    public function runValidators($field)
+    {
+    	$rules = explode('|', $field->validate);
+
+        foreach ($rules as $rule)
+        {    		
+            $method = null;
+            $param = null;
+
+            // Check if we have rule parameters
+            if (strstr($rule, ',') !== false)
+            {
+                $rule   = explode(',', $rule);
+                $method = 'validate_'.$rule[0];
+                $param  = $rule[1];
+                $rule   = $rule[0];
+            } 
+            else
+            {
+                $method = 'validate_'.$rule;
+            }
+
+            if (is_callable(array('Bosch2_Validator', $method)))
+            {
+                $result = Bosch2_Validator::$method($field, $field->stored_value, $param);
+
+                if (is_array($result))
+                {
+                    $field->has_errors          = 'has-error';
+                    $field->errors[]            = $result;
+                    $this->has_errors           = true;
+                    $this->errors[$field->name] = $result;
+                }
+            }
+            else
+            {
+                throw new Exception("Validator method '$method' does not exist.");
+            }
+        }
 
     	return $field;
     }
-
-    public static function filter_sanitize_string($value, $params = null)
-    {
-        return filter_var($value, FILTER_SANITIZE_STRING);
-    }
-
-
+    
 	public static function exception ($e)
 	{
         echo '
@@ -163,6 +193,26 @@ class Bosch2
         </div>';
 
         return true;
+    }
+
+    public function outputErrors()
+    {
+        if ( !$this->has_errors )
+        {
+            return;
+        }
+
+        $errors = array();
+
+        foreach($this->fields as $field)
+        {
+            $errors = array_merge($errors, $field->getErrors());
+        }
+
+        echo '
+        <div class="alert alert-danger">
+            '.implode('<br />', $errors).'        
+        </div>';
     }
 }
 
